@@ -168,11 +168,6 @@ func _mat(c: Color, emission := 0.0) -> StandardMaterial3D:
 	m.albedo_color = c
 	m.roughness = 0.5
 	m.metallic = 0.25
-	# 차도 민무늬 단색이면 도시 안에서 혼자 매끈해 보인다. 얇은 철판 결을 깔아준다.
-	m.albedo_texture = Tex.get_tex(Tex.Kind.METAL)
-	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-	m.uv1_triplanar = true
-	m.uv1_scale = Vector3(1.4, 1.4, 1.4)
 	if emission > 0.0:
 		m.emission_enabled = true
 		m.emission = c

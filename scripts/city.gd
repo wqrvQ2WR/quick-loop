@@ -89,7 +89,7 @@ func build_with_theme(seed_value: int, theme_idx: int) -> void:
 
 func set_night(v: float) -> void:
 	# v: 0 = 한낮, 1 = 한밤. 창문 불빛 세기를 여기서만 건드린다.
-	var e: float = clampf(v, 0.0, 1.0) * 0.7
+	var e: float = clampf(v, 0.0, 1.0) * 0.55
 	for m in window_mats:
 		m.emission_energy_multiplier = e
 
@@ -136,6 +136,9 @@ func _flush_marks() -> void:
 	mat.vertex_color_is_srgb = true
 	mat.roughness = 0.9
 	mmi.material_override = mat
+	# 바닥 표시뿐 아니라 건물 장식(난간·차양·발코니)도 이 덩어리에 들어간다.
+	# 그림자를 꺼버리면 실루엣이 통째로 사라진다.
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	add_child(mmi)
 	_marks.clear()
 
@@ -204,23 +207,20 @@ func _mat(c: Color, emission := 0.0, kind := -1, tile := 0.5) -> StandardMateria
 	m.albedo_color = c
 	m.roughness = 0.85
 	m.metallic = 0.0
-	if kind >= 0:
-		# 삼면 투영이라 박스 크기가 제각각이어도 무늬 크기가 일정하다.
-		# UV 를 손으로 맞추면 건물마다 타일이 늘어난다.
-		m.albedo_texture = Tex.get_tex(kind)
+	# 면은 민무늬로 둔다(플랫 셰이딩). 입체감은 텍스처가 아니라
+	# 조명·그림자·실루엣으로 낸다. 도트 무늬를 같이 쓰면 둘 다 죽는다.
+	if kind == Tex.Kind.WINDOWS:
+		# 낮엔 민무늬, 밤에만 창문 일부에 불이 들어온다.
+		# 알베도에는 안 깔고 발광 마스크로만 쓴다.
+		m.emission_enabled = true
+		m.emission = Color(1.0, 0.88, 0.62)
+		m.emission_texture = Tex.get_window_emission()
 		m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 		m.uv1_triplanar = true
 		m.uv1_scale = Vector3(tile, tile, tile)
-		if kind == Tex.Kind.WINDOWS:
-			# 창문 일부만 불이 켜진 마스크를 발광으로 깐다.
-			# 낮엔 햇빛에 묻히고 밤에만 티가 난다. 매 프레임 갱신할 필요가 없다.
-			m.emission_enabled = true
-			m.emission = Color(1.0, 0.88, 0.62)
-			m.emission_texture = Tex.get_window_emission()
-			# 낮에는 꺼둔다. 햇빛 아래서 창문이 빛나면 건물색이 전부 크림색으로 뜬다.
-			m.emission_energy_multiplier = 0.0
-			window_mats.append(m)
-			return m
+		m.emission_energy_multiplier = 0.0
+		window_mats.append(m)
+		return m
 	if emission > 0.0:
 		m.emission_enabled = true
 		m.emission = c
@@ -377,9 +377,12 @@ func _building(cx: float, cz: float, w: float, d: float, h: float, yaw: float, h
 	var sr: Array = theme["sat"]
 	var vr: Array = theme["val"]
 	var th_hue: float = lerpf(float(hr[0]), float(hr[1]), fmod(hue, 1.0))
+	# 플랫 셰이딩은 색이 너무 쨍하면 면끼리 안 갈린다. 채도를 조금 내리고
+	# 대신 밝기 폭을 넓혀서 명암으로 형태가 읽히게 한다.
 	var col := Color.from_hsv(th_hue,
-		_rng.randf_range(float(sr[0]), float(sr[1])),
-		_rng.randf_range(float(vr[0]), float(vr[1])))
+		_rng.randf_range(float(sr[0]), float(sr[1])) * 0.82,
+		clampf(_rng.randf_range(float(vr[0]), float(vr[1])) * _rng.randf_range(0.82, 1.05),
+			0.2, 1.0))
 	var glass := h > 34.0 and _rng.randf() < 0.35
 	# 표면 무늬. 높은 건물은 통창, 낮은 건물은 벽돌이나 콘크리트.
 	var skin: int = Tex.Kind.WINDOWS
@@ -389,6 +392,8 @@ func _building(cx: float, cz: float, w: float, d: float, h: float, yaw: float, h
 		skin = Tex.Kind.PANEL
 	var skin_tile: float = 0.22 if skin == Tex.Kind.WINDOWS else 0.42
 	var base_h := h
+	var top_w := w
+	var top_d := d
 	var tiers := 1
 	if h > 30.0 and _rng.randf() < 0.45:
 		tiers = _rng.randi_range(2, 3)
@@ -403,6 +408,8 @@ func _building(cx: float, cz: float, w: float, d: float, h: float, yaw: float, h
 				col.lightened(t * 0.08), true, 0.0, yaw, glass, skin, skin_tile)
 			y += seg
 			remaining -= seg
+			top_w = cw
+			top_d = cd
 			cw *= _rng.randf_range(0.6, 0.82)
 			cd *= _rng.randf_range(0.6, 0.82)
 		base_h = y - 0.9
@@ -410,10 +417,11 @@ func _building(cx: float, cz: float, w: float, d: float, h: float, yaw: float, h
 		_box(Vector3(w, h, d), Vector3(cx, h * 0.5 + 0.9, cz), col, true, 0.0, yaw, glass,
 			skin, skin_tile)
 
+	# 난간·지붕은 '맨 위 단' 크기로 올려야 한다. 밑단 크기로 올리면 허공에 모자가 뜬다.
+	_roofline(cx, cz, top_w, top_d, base_h, yaw, col, h, tiers == 1)
 	if _rng.randf() < 0.6:
-		_box(Vector3(w * _rng.randf_range(0.2, 0.4), _rng.randf_range(2.0, 5.0), d * 0.3),
-			Vector3(cx, base_h + 2.4, cz), col.lightened(0.3), false, 0.0, yaw, false,
-			Tex.Kind.METAL, 0.5)
+		_mark(Vector3(w * _rng.randf_range(0.2, 0.4), _rng.randf_range(2.0, 5.0), d * 0.3),
+			Vector3(cx, base_h + 2.4, cz), col.lightened(0.3), yaw)
 	if base_h > 20.0 and _rng.randf() < 0.45:
 		# 간판은 블록 바깥(= 도로) 쪽 면에 건다. 아무 면에나 붙이면 옆 건물 벽만 쳐다본다.
 		var outward := Vector2(cx, cz) - _block_c
@@ -439,6 +447,47 @@ func _building(cx: float, cz: float, w: float, d: float, h: float, yaw: float, h
 		else:
 			var sign_col := Color.from_hsv(fmod(th_hue + 0.5, 1.0), 0.9, 1.0)
 			_box(Vector3(face_w * 0.75, 4.0, 0.5), sign_pos, sign_col, false, 1.6, best_yaw)
+
+
+func _roofline(cx: float, cz: float, w: float, d: float, top: float, yaw: float,
+		col: Color, h: float, single_tier: bool) -> void:
+	# 민무늬 박스는 실루엣이 없으면 그냥 색칠한 상자다.
+	# 윗변과 옆면에 몇 개만 붙여도 건물처럼 읽힌다. 건물당 평균 2~3개만 쓴다.
+	var dark := col.darkened(0.32)
+
+	if h < 20.0 and _rng.randf() < 0.4:
+		# 낮은 건물은 모임지붕. 4분할 원뿔 = 사각뿔이다.
+		# 처음엔 눕혀서 박공으로 쓰려 했는데, 4분할 원뿔을 눕히면 쐐기가 옆으로 튀어나온다.
+		var roof := MeshInstance3D.new()
+		var pm := CylinderMesh.new()
+		pm.top_radius = 0.0
+		# 꼭짓점이 박스 네 귀퉁이에 닿도록 외접원 반지름을 쓴다
+		pm.bottom_radius = sqrt(w * w + d * d) * 0.5
+		pm.height = minf(w, d) * 0.45
+		pm.radial_segments = 4
+		roof.mesh = pm
+		roof.material_override = _mat(dark)
+		roof.position = Vector3(cx, top + pm.height * 0.5, cz)
+		# 45도 돌려야 네 면이 박스 면과 나란해진다
+		roof.rotation.y = yaw + PI * 0.25
+		add_child(roof)
+	else:
+		# 높은 건물은 옥상 난간. 본체보다 살짝 넓은 띠 하나면 윤곽이 생긴다.
+		_mark(Vector3(w + 1.0, 1.1, d + 1.0), Vector3(cx, top + 1.3, cz), dark, yaw)
+
+	# 1층 차양
+	if _rng.randf() < 0.55:
+		var out := Vector3(0, 0, d * 0.5 + 0.9).rotated(Vector3.UP, yaw)
+		_mark(Vector3(w * 0.92, 0.5, 2.0), Vector3(cx, 5.2, cz) + out, col.darkened(0.45), yaw)
+
+	# 발코니 슬래브 몇 장. 층이 있는 것처럼 보이게 한다.
+	# 단이 여러 개면 위로 갈수록 좁아져서 슬래브가 허공에 뜬다. 한 단짜리만 붙인다.
+	if single_tier and h > 14.0 and _rng.randf() < 0.5:
+		var n: int = _rng.randi_range(1, 3)
+		var side := Vector3(0, 0, d * 0.5 + 0.55).rotated(Vector3.UP, yaw)
+		for k in n:
+			var y: float = _rng.randf_range(6.0, maxf(7.0, h - 3.0))
+			_mark(Vector3(w * 0.78, 0.45, 1.3), Vector3(cx, y, cz) + side, col.lightened(0.22), yaw)
 
 
 func _make_block(i: int, j: int) -> void:
@@ -501,10 +550,43 @@ func _tree(base: Vector3, scale_f := 1.0) -> void:
 	var th: float = _rng.randf_range(4.0, 6.5) * scale_f
 	var leaf: float = _rng.randf_range(4.0, 5.6) * scale_f
 	var root := _breakable_root(base)
-	_part(root, Vector3(0.9, th, 0.9) * scale_f, Vector3(0, th * 0.5, 0), Color(0.42, 0.29, 0.2),
-		0.0, Tex.Kind.BARK, 1.1)
-	_part(root, Vector3(leaf, leaf, leaf), Vector3(0, th + leaf * 0.38, 0),
-		Color(theme["grass"]).darkened(_rng.randf_range(0.05, 0.3)), 0.0, Tex.Kind.LEAF, 0.7)
+	# 줄기는 위로 갈수록 가늘게. 네모 기둥 하나면 전봇대로 보인다.
+	var trunk := MeshInstance3D.new()
+	var tc := CylinderMesh.new()
+	tc.top_radius = 0.30 * scale_f
+	tc.bottom_radius = 0.55 * scale_f
+	tc.height = th
+	tc.radial_segments = 6
+	trunk.mesh = tc
+	trunk.material_override = _mat(Color(0.42, 0.29, 0.2))
+	trunk.position = Vector3(0, th * 0.5, 0)
+	root.add_child(trunk)
+	# 잎은 크기가 다른 덩어리 두 겹. 한 덩어리면 그냥 초록 상자다.
+	var lc := Color(theme["grass"]).darkened(_rng.randf_range(0.05, 0.3))
+	# 아래 잎 덩어리는 절반만. 나무 한 그루에 메시 3개를 다 쓰면 드로우콜이 아깝다.
+	if _rng.randf() < 0.5:
+		var low := MeshInstance3D.new()
+		var lm := CylinderMesh.new()
+		lm.top_radius = leaf * 0.46
+		lm.bottom_radius = leaf * 0.60
+		lm.height = leaf * 0.55
+		lm.radial_segments = 6
+		low.mesh = lm
+		low.material_override = _mat(lc)
+		low.position = Vector3(0, th + leaf * 0.22, 0)
+		low.rotation.y = _rng.randf() * TAU
+		root.add_child(low)
+	var top := MeshInstance3D.new()
+	var tm2 := CylinderMesh.new()
+	tm2.top_radius = 0.0
+	tm2.bottom_radius = leaf * 0.48
+	tm2.height = leaf * 0.72
+	tm2.radial_segments = 6
+	top.mesh = tm2
+	top.material_override = _mat(lc.lightened(0.12))
+	top.position = Vector3(0, th + leaf * 0.72, 0)
+	top.rotation.y = _rng.randf() * TAU
+	root.add_child(top)
 	_breakable_body(root, Vector3(maxf(1.6, leaf * 0.5), th + leaf, maxf(1.6, leaf * 0.5)),
 		Vector3(0, (th + leaf) * 0.5, 0))
 

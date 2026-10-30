@@ -46,11 +46,6 @@ func _mat(c: Color, emission := 0.0) -> StandardMaterial3D:
 	m.albedo_color = c
 	m.roughness = 0.45
 	m.metallic = 0.5
-	# 플레이어 차와 같은 철판 결. 혼자 매끈하면 붙여넣은 것처럼 보인다.
-	m.albedo_texture = Tex.get_tex(Tex.Kind.METAL)
-	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-	m.uv1_triplanar = true
-	m.uv1_scale = Vector3(1.2, 1.2, 1.2)
 	if emission > 0.0:
 		m.emission_enabled = true
 		m.emission = c

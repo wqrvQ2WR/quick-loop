@@ -1873,9 +1873,19 @@ func _setup_world() -> void:
 
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-46, 132, 0)
-	sun.light_energy = 1.25
+	sun.light_energy = 1.45
 	sun.light_color = Color(1.0, 0.95, 0.85)
 	sun.shadow_enabled = true
+	# 민무늬 면이라 형태는 전부 그림자가 만든다. 흐릿하면 아무것도 안 보인다.
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	sun.directional_shadow_max_distance = 220.0
+	sun.directional_shadow_split_1 = 0.06
+	sun.directional_shadow_split_2 = 0.16
+	sun.directional_shadow_split_3 = 0.42
+	sun.directional_shadow_blend_splits = true
+	sun.shadow_blur = 0.6
+	sun.shadow_normal_bias = 1.4
+	sun.shadow_bias = 0.035
 	add_child(sun)
 	world_sun = sun
 
