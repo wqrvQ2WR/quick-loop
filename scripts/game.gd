@@ -140,7 +140,13 @@ var zone_phase := 0
 var supply_crate: Node3D
 var supplies_taken := 0
 
-var shake := 0.0
+var shake := 0.0            # 트라우마 0~1. 제곱해서 쓴다
+var _shake_t := 0.0         # 흔들림 위상. 매 프레임 난수를 쓰면 지직거린다
+var shake_level := 2        # 0 끔 / 1 약하게 / 2 강하게
+var flash_rect: ColorRect
+var _hit_stop_id := 0
+var _base_time_scale := 1.0
+var _last_score_shown := 0.0
 var botplay := false
 var bot_speed := 55.0
 var cam_pos := Vector3(0, 12, 24)
@@ -548,6 +554,8 @@ func _ready() -> void:
 			debug_bz_radius = float(a.substr(9))
 		if a.begins_with("turbo="):
 			Engine.time_scale = clampf(float(a.substr(6)), 0.1, 20.0)
+			# 히트스톱이 끝나고 1.0 으로 되돌리면 turbo 설정이 날아간다
+			_base_time_scale = Engine.time_scale
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("time="):
 			start_time = float(a.substr(5))
@@ -818,6 +826,50 @@ func _ready() -> void:
 			float(Car.DRIFT_TIERS[0]) / rate, float(Car.DRIFT_TIERS[1]) / rate,
 			float(Car.DRIFT_TIERS[2]) / rate])
 		car.debug_input["drift"] = false
+		get_tree().quit()
+	if "juicetest" in OS.get_cmdline_user_args():
+		debug_no_save = true
+		debug_events = true
+		start_game()
+		await get_tree().create_timer(0.5).timeout
+		tutorial_step = -1
+		print("[dbg] 흔들림 단계 %d (0끔/1약/2강)" % shake_level)
+		# 1) 연타가 한 대보다 커야 한다 (maxf 가 아니라 누적)
+		shake = 0.0
+		_shake(0.4, true)
+		var one := shake
+		_shake(0.4, true)
+		_shake(0.4, true)
+		print("[dbg] 트라우마 — 한 대 %.2f / 세 대 연타 %.2f (연타가 커야 정상)" % [one, shake])
+		# 2) 스스로 잦아드는가
+		var t0 := shake
+		await get_tree().create_timer(0.7).timeout
+		print("[dbg] 0.7초 뒤 %.2f -> %.2f (0 쪽으로 가야 정상)" % [t0, shake])
+		# 3) 히트스톱이 배속을 제대로 돌려놓는가
+		var before := Engine.time_scale
+		_hit_stop(0.08, 0.05)
+		await get_tree().create_timer(0.02, true, false, true).timeout
+		var during := Engine.time_scale
+		await get_tree().create_timer(0.3, true, false, true).timeout
+		print("[dbg] 히트스톱 — 전 %.2f / 중 %.2f / 후 %.2f (중만 낮아야 정상)" % [
+			before, during, Engine.time_scale])
+		# 4) 겹친 히트스톱이 먼저 끝난 쪽에 끊기지 않는가
+		_hit_stop(0.05, 0.05)
+		await get_tree().create_timer(0.02, true, false, true).timeout
+		_hit_stop(0.30, 0.05)
+		await get_tree().create_timer(0.12, true, false, true).timeout
+		print("[dbg] 겹친 히트스톱 — 0.12초 시점 배속 %.2f (아직 낮아야 정상)" % Engine.time_scale)
+		await get_tree().create_timer(0.4, true, false, true).timeout
+		print("[dbg] 겹친 히트스톱 — 끝난 뒤 배속 %.2f" % Engine.time_scale)
+		# 5) 흔들림 끄면 히트스톱도 안 걸려야 한다
+		shake_level = 0
+		_hit_stop(0.2, 0.05)
+		await get_tree().create_timer(0.05, true, false, true).timeout
+		print("[dbg] 흔들림 끔 상태 히트스톱 — 배속 %.2f (1.00 이어야 정상)" % Engine.time_scale)
+		shake = 0.0
+		_shake(1.0, true)
+		await get_tree().process_frame
+		print("[dbg] 흔들림 끔 상태에서 흔들기 호출 — 트라우마 %.2f (값은 쌓이되 화면은 안 흔들림)" % shake)
 		get_tree().quit()
 	if "camtest" in OS.get_cmdline_user_args():
 		debug_no_save = true
@@ -2191,6 +2243,13 @@ func _setup_ui() -> void:
 	ui = CanvasLayer.new()
 	add_child(ui)
 
+	# 큰 충격용 흰 섬광. 무지개보다 위, HUD 글자보다는 아래.
+	flash_rect = ColorRect.new()
+	flash_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	flash_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	flash_rect.color = Color(1, 1, 1, 0)
+	ui.add_child(flash_rect)
+
 	# 무지개 환각 시점 전용 화면 덧칠. HUD 보다 먼저 넣어서 글자를 안 가린다.
 	# 단색을 깜빡이면 그냥 화면이 하얘진다. 무지개 띠를 화면 밖까지 깔고 옆으로 흘린다.
 	var grad := Gradient.new()
@@ -3046,6 +3105,8 @@ func start_game(keep_progress := false) -> void:
 func _on_rival_destroyed(pos: Vector3, reward: float) -> void:
 	rival_kills += 1
 	_shake(0.55, true)
+	_hit_stop(0.1, 0.05)
+	_flash(0.4, Color(1.0, 0.75, 0.4))
 	if macho_active:
 		_toast("마초 트럭 KO! 승부수당이 도로에 떨어졌습니다")
 		_pop("마짱 승부수당! +%s원" % _won(reward), Color(1.0, 0.65, 0.15))
@@ -3141,6 +3202,8 @@ func _player_down(_reason: String) -> void:
 	_pop("차량 대파  -%s원" % _won(loss), Color(1.0, 0.3, 0.3))
 	_toast(_line(death_lines))
 	_shake(1.2, true)
+	_hit_stop(0.14, 0.05)
+	_flash(0.55, Color(1.0, 0.4, 0.4))
 	player_hit_cooldown = 1.5
 	# 자기장 안쪽 안전한 곳에서 다시 시작
 	if bluezone_active:
@@ -3749,7 +3812,50 @@ func _shake(amount: float, big := false) -> void:
 	# 전체화면에서는 큰 충돌만 흔든다. 창모드는 전부 그대로.
 	if _is_fullscreen() and not big:
 		return
-	shake = maxf(shake, amount)
+	# 겹쳐 맞으면 더 크게 흔들려야 한다. maxf 로 덮으면 연타가 한 대처럼 느껴진다.
+	shake = clampf(shake + amount * 0.55, 0.0, 1.0)
+
+
+func _hit_stop(duration := 0.07, slow := 0.06) -> void:
+	# 큰 충격에만. 가벼운 접촉까지 멈추면 조작이 끈적해진다.
+	if shake_level == 0 or state != State.PLAY:
+		return
+	_hit_stop_id += 1
+	var my_id := _hit_stop_id
+	Engine.time_scale = _base_time_scale * slow
+	# 4번째 인자 ignore_time_scale=true. 안 주면 멈춘 동안 타이머도 멈춰서 안 돌아온다.
+	await get_tree().create_timer(duration, true, false, true).timeout
+	if my_id == _hit_stop_id:
+		# 더 최근 히트스톱이 복구를 맡았으면 끼어들지 않는다
+		Engine.time_scale = _base_time_scale
+
+
+func _flash(a := 0.5, c := Color(1, 1, 1)) -> void:
+	if flash_rect == null or shake_level == 0:
+		return
+	flash_rect.color = Color(c.r, c.g, c.b, a)
+	var tw := create_tween()
+	tw.tween_property(flash_rect, "color:a", 0.0, 0.22).set_trans(Tween.TRANS_QUAD)
+
+
+func _pop_label(lbl: Control, amount := 1.35) -> void:
+	# 숫자가 그냥 바뀌면 바뀐 줄 모른다. 튀어올랐다 제자리로.
+	if lbl == null:
+		return
+	lbl.pivot_offset = lbl.size * 0.5
+	lbl.scale = Vector2(amount, amount)
+	var tw := create_tween()
+	tw.tween_property(lbl, "scale", Vector2.ONE, 0.22) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+
+func cycle_shake_level() -> void:
+	shake_level = (shake_level + 1) % 3
+	shake = 0.0
+	if flash_rect:
+		flash_rect.color = Color(1, 1, 1, 0)
+	_save()
+	_toast("화면 흔들림: %s" % ["끔", "약하게", "강하게"][shake_level])
 
 
 func cycle_camera() -> void:
@@ -3842,9 +3948,15 @@ func _update_camera(delta: float) -> void:
 		follow = lerpf(follow, 26.0, aim_t)
 	cam_pos = cam_pos.lerp(desired, clampf(delta * follow, 0.0, 1.0))
 	var sh := Vector3.ZERO
+	var roll_extra := 0.0
 	if shake > 0.0:
-		shake = maxf(0.0, shake - delta * 2.4)
-		sh = Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * shake
+		# 트라우마 모델: 세기는 제곱이라 작은 충돌은 거의 안 흔들리고 큰 건 확 때린다.
+		shake = maxf(0.0, shake - delta * 1.5)
+		var amp: float = shake * shake * (0.0 if shake_level == 0 else (0.5 if shake_level == 1 else 1.0))
+		_shake_t += delta * 34.0
+		# 난수를 매 프레임 쓰면 지직거린다. 주기가 다른 사인 셋을 섞는다.
+		sh = Vector3(sin(_shake_t * 1.7), sin(_shake_t * 2.3), sin(_shake_t * 1.1)) * amp * 1.6
+		roll_extra = sin(_shake_t * 1.37) * amp * 0.09
 	cam.global_position = cam_pos + sh
 	# 탑뷰는 바로 위에서 내려다봐서 기본 up 벡터와 시선이 평행해진다. 옆으로 누우므로
 	# 차 뒤쪽을 up 으로 준다.
@@ -3852,6 +3964,9 @@ func _update_camera(delta: float) -> void:
 		cam.look_at(look_at, -back)
 	else:
 		cam.look_at(look_at)
+	if roll_extra != 0.0:
+		# look_at 이 롤을 0 으로 되돌리므로 그 뒤에 기울인다
+		cam.rotate_object_local(Vector3.FORWARD, roll_extra)
 	if cam_mode == CamMode.TRIP:
 		# look_at 이 롤을 0 으로 되돌리므로 그 뒤에 직접 기울인다.
 		# 주기를 둘 겹쳐서 가끔 화면이 통째로 뒤집힌다.
@@ -4083,7 +4198,13 @@ func _update_hud(dist: float, delta: float) -> void:
 		else:
 			lbl_time.add_theme_color_override("font_color", Color.WHITE)
 			lbl_time.scale = Vector2.ONE
-	lbl_score.text = "%s 원" % _won(score)
+	# 돈이 늘면 숫자가 튀어오른다. 그냥 바뀌면 바뀐 줄 모른다.
+	var money_txt := "%s 원" % _won(score)
+	if lbl_score.text != money_txt:
+		lbl_score.text = money_txt
+		if score > _last_score_shown:
+			_pop_label(lbl_score, 1.28)
+		_last_score_shown = score
 	goal_bar.size.x = 300.0 * clampf(score / GOAL, 0.0, 1.0)
 	lbl_goal.text = "남은 금액 %s원" % _won(maxf(0.0, GOAL - score))
 	lbl_combo.text = "연속 %d      배달 %d건" % [combo, deliveries]
@@ -4207,6 +4328,10 @@ func _on_crash(force: float) -> void:
 		print("[event] 대형사고 impact=%.1f  누적 벽수집=%s원  수익=%s원" % [force, _won(crash_total + CRASH_PAY), _won(score + CRASH_PAY)])
 	combo = 0
 	_shake(clampf(force * 0.045, 0.3, 1.4), true)
+	# 세게 박은 것만 멎는다. 긁힘까지 멈추면 조작이 끈적해진다.
+	if force > 18.0:
+		_hit_stop(0.08, 0.06)
+		_flash(0.28)
 	if state == State.PLAY:
 		score += CRASH_PAY
 		career_earnings += CRASH_PAY
@@ -4261,6 +4386,8 @@ func _on_drift_boost(tier: int, charge: float, secs: float) -> void:
 	_stunt(gain, "%s (%.1f초 드리프트)" % [names[tier], secs])
 	_pop("%s!" % names[tier], car.drift_color(tier))
 	_shake(0.12 + 0.06 * tier)
+	if tier >= 3:
+		_hit_stop(0.05, 0.12)
 	if randf() < 0.55:
 		_toast(_line(drift_lines))
 	if drift_boosts >= 15:
@@ -4431,6 +4558,7 @@ func _load_save() -> void:
 		selected_district = int(cfg.get_value("record", "selected_district", 0))
 		tutorial_done = bool(cfg.get_value("record", "tutorial_done", false))
 		cam_mode = int(cfg.get_value("record", "cam_mode", 0)) % CamMode.size()
+		shake_level = clampi(int(cfg.get_value("record", "shake_level", 2)), 0, 2)
 		seen_unlock_cutscene = cfg.get_value("record", "seen_unlock_cutscene", {})
 		var saved: Dictionary = cfg.get_value("record", "achieved", {})
 		for k in saved.keys():
@@ -4447,5 +4575,6 @@ func _save() -> void:
 	cfg.set_value("record", "achieved", achieved)
 	cfg.set_value("record", "tutorial_done", tutorial_done)
 	cfg.set_value("record", "cam_mode", cam_mode)
+	cfg.set_value("record", "shake_level", shake_level)
 	cfg.set_value("record", "seen_unlock_cutscene", seen_unlock_cutscene)
 	cfg.save(SAVE_PATH)

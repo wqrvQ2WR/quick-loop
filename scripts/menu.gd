@@ -206,7 +206,7 @@ func _row_count() -> int:
 
 func _activate_setting(idx: int) -> void:
 	# 되돌릴 수 없는 동작만 두 번 눌러야 실행된다 (0=튜토리얼, 3=소지금은 그냥 실행)
-	if idx != 0 and idx != 3 and idx != 4 and confirm_idx != idx:
+	if idx != 0 and idx != 3 and idx != 4 and idx != 5 and confirm_idx != idx:
 		confirm_idx = idx
 		refresh()
 		return
@@ -222,6 +222,9 @@ func _activate_setting(idx: int) -> void:
 			refresh()
 		3:
 			game.grant_test_money()
+			refresh()
+		4:
+			game.cycle_shake_level()
 			refresh()
 		_:
 			close()
@@ -263,6 +266,11 @@ func _draw_settings() -> void:
 			{
 			"name": "테스트용 소지금 1,000만원",
 			"desc": "소지금을 10,000,000원으로 맞추고 구역 해금을 갱신한다. 테스트용이다.",
+			"warn": "",
+		},
+		{
+			"name": "화면 흔들림: %s" % ["끔", "약하게", "강하게"][game.shake_level],
+			"desc": "충돌·격파 때 화면이 흔들리고 순간 멎는 정도. 멀미가 나면 줄이거나 끈다.",
 			"warn": "",
 		},
 		{
